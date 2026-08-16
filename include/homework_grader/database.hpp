@@ -26,6 +26,7 @@ class Database {
     Database& operator=(Database&&) noexcept;
 
     [[nodiscard]] Id create_assignment(const Assignment& assignment);
+    [[nodiscard]] bool delete_assignment(Id id);
     [[nodiscard]] std::vector<Assignment> list_assignments() const;
     [[nodiscard]] std::optional<Assignment> get_assignment(Id id) const;
     [[nodiscard]] int submission_count(Id assignment_id) const;

@@ -29,6 +29,7 @@ class App {
     [[nodiscard]] std::vector<int> read_wrong_questions(int total_questions);
     [[nodiscard]] Assignment read_assignment();
     [[nodiscard]] bool create_assignment_interactive();
+    void delete_assignment_interactive();
     [[nodiscard]] bool open_assignment_interactive();
     [[nodiscard]] AssignmentAction assignment_loop(const Assignment& assignment);
     void add_submission_interactive(const Assignment& assignment);

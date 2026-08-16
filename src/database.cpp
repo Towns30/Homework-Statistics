@@ -282,6 +282,19 @@ Id Database::create_assignment(const Assignment& assignment) {
     return id;
 }
 
+bool Database::delete_assignment(Id id) {
+    Transaction transaction(impl_->database);
+    int deleted{};
+    {
+        Statement statement(impl_->database, "DELETE FROM assignments WHERE id = ?");
+        statement.bind(1, id);
+        statement.execute();
+        deleted = sqlite3_changes(impl_->database);
+    }
+    transaction.commit();
+    return deleted > 0;
+}
+
 std::vector<Assignment> Database::list_assignments() const {
     Statement statement(impl_->database,
                         "SELECT id, name, total_questions, total_students, a_plus_threshold, "

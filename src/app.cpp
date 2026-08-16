@@ -40,14 +40,17 @@ int App::run() {
             output_ << "\n主菜单\n"
                     << "1. 新建作业\n"
                     << "2. 打开已有作业\n"
-                    << "3. 退出\n";
-            const int choice = read_integer("请选择：", 1, 3);
+                    << "3. 删除已有作业\n"
+                    << "4. 退出\n";
+            const int choice = read_integer("请选择：", 1, 4);
             if (choice == 1) {
                 static_cast<void>(create_assignment_interactive());
             } else if (choice == 2) {
                 if (open_assignment_interactive()) {
                     return 0;
                 }
+            } else if (choice == 3) {
+                delete_assignment_interactive();
             } else {
                 output_ << "数据已保存，再见。\n";
                 return 0;
@@ -154,6 +157,56 @@ bool App::create_assignment_interactive() {
     const Id id = database_.create_assignment(assignment);
     output_ << "作业已保存，ID 为 " << id << "。\n";
     return true;
+}
+
+void App::delete_assignment_interactive() {
+    const auto assignments = database_.list_assignments();
+    if (assignments.empty()) {
+        output_ << "\n目前没有可删除的作业。\n";
+        return;
+    }
+
+    output_ << "\n删除已有作业\n";
+    for (const auto& assignment : assignments) {
+        output_ << "ID " << assignment.id << " | " << assignment.name << " | "
+                << assignment.total_questions << " 题 | "
+                << database_.submission_count(assignment.id) << '/' << assignment.total_students
+                << " 人 | 创建于 " << assignment.created_at << '\n';
+    }
+
+    while (true) {
+        const auto id = parse_integer(read_line("请输入要删除的作业 ID（输入 0 取消删除）："));
+        if (!id.has_value() || *id < 0) {
+            output_ << "输入无效：请输入列表中的作业 ID。\n";
+            continue;
+        }
+        if (*id == 0) {
+            output_ << "已取消删除。\n";
+            return;
+        }
+        const auto assignment = database_.get_assignment(static_cast<Id>(*id));
+        if (!assignment.has_value()) {
+            output_ << "不存在这个作业 ID，请重新输入。\n";
+            continue;
+        }
+
+        const int completed = database_.submission_count(assignment->id);
+        output_ << "\n即将永久删除：\n"
+                << "作业 ID：" << assignment->id << '\n'
+                << "作业名称：" << assignment->name << '\n'
+                << "已录入学生记录：" << completed << " 份\n"
+                << "警告：该作业的所有学生记录和错题数据都会一并删除，且无法撤销。\n";
+        if (!confirm("确认永久删除这份作业吗？")) {
+            output_ << "已取消删除，数据保持不变。\n";
+            return;
+        }
+        if (database_.delete_assignment(assignment->id)) {
+            output_ << "作业“" << assignment->name << "”及其全部数据已删除。\n";
+        } else {
+            output_ << "作业已不存在，没有删除任何数据。\n";
+        }
+        return;
+    }
 }
 
 bool App::open_assignment_interactive() {

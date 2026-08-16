@@ -238,6 +238,34 @@ void test_persistence() {
     }
 }
 
+void test_delete_assignment() {
+    TemporaryDatabasePath temporary;
+    Id deleted_id{};
+    Id retained_id{};
+    {
+        Database database(temporary.path());
+        deleted_id = database.create_assignment(sample_assignment(2));
+        auto retained = sample_assignment(1);
+        retained.name = "保留的作业";
+        retained_id = database.create_assignment(retained);
+        static_cast<void>(database.add_submission(deleted_id, {1, 3}));
+        static_cast<void>(database.add_submission(deleted_id, {}));
+
+        check(!database.delete_assignment(999'999), "删除不存在的作业时返回失败");
+        check(database.delete_assignment(deleted_id), "删除存在的作业时返回成功");
+        check(!database.get_assignment(deleted_id).has_value(), "作业主记录已删除");
+        check(database.list_submissions(deleted_id).empty(), "学生记录随作业级联删除");
+        const auto assignments = database.list_assignments();
+        check(assignments.size() == 1 && assignments[0].id == retained_id,
+              "删除目标作业不会影响其他作业");
+    }
+    {
+        Database reopened(temporary.path());
+        check(!reopened.get_assignment(deleted_id).has_value(), "重新打开后删除结果仍然有效");
+        check(reopened.get_assignment(retained_id).has_value(), "重新打开后其他作业仍然存在");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -248,6 +276,7 @@ int main() {
         {"倒序修改与实时统计", test_reverse_update_and_live_statistics},
         {"统计口径", test_statistics_zero_partial_and_complete},
         {"持久化", test_persistence},
+        {"删除作业", test_delete_assignment},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {
