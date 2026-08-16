@@ -1,0 +1,47 @@
+# 构建产物
+/build/
+/build-*/
+/cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# IDE 与编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 数据库与真实作业数据（包括 SQLite 辅助文件）
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+/test-data/
+
+# 测试缓存、覆盖率与临时文件
+.cache/
+.pytest_cache/
+*.gcda
+*.gcno
+*.profraw
+*.tmp
+*.temp
+
