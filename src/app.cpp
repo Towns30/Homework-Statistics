@@ -292,7 +292,8 @@ void App::add_submission_interactive(const Assignment& assignment) {
         return;
     }
     static_cast<void>(database_.add_submission(assignment.id, questions));
-    output_ << "第 " << completed + 1 << " 位学生的记录已保存。\n";
+    output_ << "第 " << completed + 1 << " 位学生的记录已保存：正确题数 " << result.correct_count
+            << "，等第 " << grade_label(result.grade) << "。\n";
 }
 
 void App::show_submission(const Assignment& assignment, const Submission& submission,
@@ -327,7 +328,10 @@ void App::update_submission_interactive(const Assignment& assignment) {
         return;
     }
     database_.update_submission(original->id, new_questions);
-    output_ << "第 " << original->sequence << " 位学生的记录已更新，录入序号保持不变。\n";
+    const auto updated = evaluate(assignment, new_questions);
+    output_ << "第 " << original->sequence << " 位学生的记录已更新：正确题数 "
+            << updated.correct_count << "，等第 " << grade_label(updated.grade)
+            << "；录入序号保持不变。\n";
 }
 
 void App::show_assignment_summary(const Assignment& assignment) {
