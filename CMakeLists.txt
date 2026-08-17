@@ -31,7 +31,7 @@ enable_project_warnings(homework_grader_core)
 enable_project_warnings(homework-grader)
 
 if(BUILD_TESTING)
-    add_executable(homework_grader_tests tests/tests.cpp)
+    add_executable(homework_grader_tests tests/tests.cpp src/app.cpp)
     target_link_libraries(homework_grader_tests PRIVATE homework_grader_core)
     enable_project_warnings(homework_grader_tests)
     add_test(NAME homework_grader_tests COMMAND homework_grader_tests)
@@ -67,4 +67,3 @@ if(CLANG_FORMAT_EXECUTABLE)
         VERBATIM
     )
 endif()
-

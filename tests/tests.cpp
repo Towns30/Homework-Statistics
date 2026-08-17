@@ -3,11 +3,13 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "homework_grader/app.hpp"
 #include "homework_grader/database.hpp"
 #include "homework_grader/grading.hpp"
 #include "homework_grader/input.hpp"
@@ -15,6 +17,7 @@
 
 namespace {
 
+using homework_grader::App;
 using homework_grader::Assignment;
 using homework_grader::Database;
 using homework_grader::Grade;
@@ -266,6 +269,36 @@ void test_delete_assignment() {
     }
 }
 
+void test_confirmation_uses_yn() {
+    TemporaryDatabasePath temporary;
+    Database database(temporary.path());
+    std::istringstream input(
+        "1\n"
+        "英文输入测试\n"
+        "4\n"
+        "1\n"
+        "4\n"
+        "3\n"
+        "2\n"
+        "1\n"
+        "0\n"
+        "是\n"
+        "Y\n"
+        "3\n"
+        "1\n"
+        "N\n"
+        "4\n");
+    std::ostringstream output;
+
+    App app(database, input, output);
+    check(app.run() == 0, "y/n 确认流程正常退出");
+    check(database.list_assignments().size() == 1, "Y 保存作业且 N 取消删除");
+    check(output.str().find("（y/n）：") != std::string::npos, "确认提示使用 y/n");
+    check(output.str().find("输入无效：请输入 y 或 n。") != std::string::npos,
+          "中文是/否不再作为确认输入");
+    check(output.str().find("（是/否）") == std::string::npos, "界面不再提示中文是/否");
+}
+
 }  // namespace
 
 int main() {
@@ -277,6 +310,7 @@ int main() {
         {"统计口径", test_statistics_zero_partial_and_complete},
         {"持久化", test_persistence},
         {"删除作业", test_delete_assignment},
+        {"y/n 确认交互", test_confirmation_uses_yn},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {

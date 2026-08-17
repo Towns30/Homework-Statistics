@@ -91,14 +91,14 @@ int App::read_integer(const std::string& prompt, int minimum, int maximum) {
 
 bool App::confirm(const std::string& prompt) {
     while (true) {
-        const std::string answer = trim(read_line(prompt + "（是/否）："));
-        if (answer == "是" || answer == "y" || answer == "Y") {
+        const std::string answer = trim(read_line(prompt + "（y/n）："));
+        if (answer == "y" || answer == "Y") {
             return true;
         }
-        if (answer == "否" || answer == "n" || answer == "N") {
+        if (answer == "n" || answer == "N") {
             return false;
         }
-        output_ << "输入无效：请输入“是”或“否”（也可输入 y/n）。\n";
+        output_ << "输入无效：请输入 y 或 n。\n";
     }
 }
 
