@@ -13,6 +13,7 @@ namespace homework_grader {
 namespace {
 
 class InputClosed : public std::exception {};
+class BackRequested : public std::exception {};
 
 std::string question_list(const std::vector<int>& questions) {
     if (questions.empty()) {
@@ -73,13 +74,16 @@ std::string App::read_line(const std::string& prompt) {
     return line;
 }
 
-int App::read_integer(const std::string& prompt, int minimum, int maximum) {
+int App::read_integer(const std::string& prompt, int minimum, int maximum, bool allow_back) {
     while (true) {
         const std::string line = read_line(prompt);
         const auto value = parse_integer(line);
         if (!value.has_value()) {
             output_ << "输入无效：请输入整数。\n";
             continue;
+        }
+        if (allow_back && *value == -1) {
+            throw BackRequested{};
         }
         if (*value < minimum || *value > maximum) {
             output_ << "输入无效：请输入 " << minimum << " ～ " << maximum << " 之间的整数。\n";
@@ -104,9 +108,13 @@ bool App::confirm(const std::string& prompt) {
 
 std::vector<int> App::read_wrong_questions(int total_questions) {
     while (true) {
-        const auto parsed = parse_wrong_questions(
-            read_line("请输入错题编号（逗号或空格分隔；全对请直接回车或输入“无”）："),
-            total_questions);
+        const std::string input = read_line(
+            "请输入错题编号（逗号或空格分隔；全对请直接回车或输入“无”；输入 -1 "
+            "取消）：");
+        if (trim(input) == "-1") {
+            throw BackRequested{};
+        }
+        const auto parsed = parse_wrong_questions(input, total_questions);
         if (parsed.ok()) {
             return parsed.questions;
         }
@@ -118,22 +126,26 @@ Assignment App::read_assignment() {
     Assignment assignment;
     do {
         assignment.name = trim(read_line("作业名称："));
+        if (assignment.name == "-1") {
+            throw BackRequested{};
+        }
         if (assignment.name.empty()) {
             output_ << "输入无效：作业名称不能为空。\n";
         }
     } while (assignment.name.empty());
 
     constexpr int maximum_value = 1'000'000;
-    assignment.total_questions =
-        read_integer("总题目数（至少 4 题，才能设置五个严格递减的等级下限）：", 4, maximum_value);
-    assignment.total_students = read_integer("总学生数：", 1, maximum_value);
+    assignment.total_questions = read_integer(
+        "总题目数（至少 4 题，才能设置五个严格递减的等级下限）：", 4, maximum_value, true);
+    assignment.total_students = read_integer("总学生数：", 1, maximum_value, true);
     while (true) {
         output_ << "请设置五个等级的正确题数下限。\n";
-        assignment.thresholds.a_plus = read_integer("A+ 下限：", 0, assignment.total_questions);
-        assignment.thresholds.a = read_integer("A 下限：", 0, assignment.total_questions);
-        assignment.thresholds.b = read_integer("B 下限：", 0, assignment.total_questions);
-        assignment.thresholds.c = read_integer("C 下限：", 0, assignment.total_questions);
-        assignment.thresholds.d = read_integer("D 下限：", 0, assignment.total_questions);
+        assignment.thresholds.a_plus =
+            read_integer("A+ 下限：", 0, assignment.total_questions, true);
+        assignment.thresholds.a = read_integer("A 下限：", 0, assignment.total_questions, true);
+        assignment.thresholds.b = read_integer("B 下限：", 0, assignment.total_questions, true);
+        assignment.thresholds.c = read_integer("C 下限：", 0, assignment.total_questions, true);
+        assignment.thresholds.d = read_integer("D 下限：", 0, assignment.total_questions, true);
         std::string error;
         if (valid_assignment_config(assignment, &error)) {
             break;
@@ -144,19 +156,24 @@ Assignment App::read_assignment() {
 }
 
 bool App::create_assignment_interactive() {
-    output_ << "\n新建作业\n";
-    const Assignment assignment = read_assignment();
-    output_ << "\n请确认等级区间（正确题数）：\n";
-    for (const auto& line : grade_range_lines(assignment)) {
-        output_ << "  " << line << '\n';
-    }
-    if (!confirm("保存这份作业吗？")) {
+    output_ << "\n新建作业\n输入 -1 可取消新建并返回主菜单。\n";
+    try {
+        const Assignment assignment = read_assignment();
+        output_ << "\n请确认等级区间（正确题数）：\n";
+        for (const auto& line : grade_range_lines(assignment)) {
+            output_ << "  " << line << '\n';
+        }
+        if (!confirm("保存这份作业吗？")) {
+            output_ << "已取消新建作业。\n";
+            return false;
+        }
+        const Id id = database_.create_assignment(assignment);
+        output_ << "作业已保存，ID 为 " << id << "。\n";
+        return true;
+    } catch (const BackRequested&) {
         output_ << "已取消新建作业。\n";
         return false;
     }
-    const Id id = database_.create_assignment(assignment);
-    output_ << "作业已保存，ID 为 " << id << "。\n";
-    return true;
 }
 
 void App::delete_assignment_interactive() {
@@ -175,12 +192,13 @@ void App::delete_assignment_interactive() {
     }
 
     while (true) {
-        const auto id = parse_integer(read_line("请输入要删除的作业 ID（输入 0 取消删除）："));
-        if (!id.has_value() || *id < 0) {
+        const auto id =
+            parse_integer(read_line("请输入要删除的作业 ID（输入 0 或 -1 取消删除）："));
+        if (!id.has_value() || *id < -1) {
             output_ << "输入无效：请输入列表中的作业 ID。\n";
             continue;
         }
-        if (*id == 0) {
+        if (*id == 0 || *id == -1) {
             output_ << "已取消删除。\n";
             return;
         }
@@ -226,12 +244,12 @@ bool App::open_assignment_interactive() {
 
         while (true) {
             const auto id =
-                parse_integer(read_line("请输入要打开的作业 ID（输入 0 返回主菜单）："));
-            if (!id.has_value() || *id < 0) {
+                parse_integer(read_line("请输入要打开的作业 ID（输入 0 或 -1 返回主菜单）："));
+            if (!id.has_value() || *id < -1) {
                 output_ << "输入无效：请输入列表中的作业 ID。\n";
                 continue;
             }
-            if (*id == 0) {
+            if (*id == 0 || *id == -1) {
                 return false;
             }
             const auto assignment = database_.get_assignment(static_cast<Id>(*id));
@@ -250,26 +268,30 @@ bool App::open_assignment_interactive() {
 
 App::AssignmentAction App::assignment_loop(const Assignment& assignment) {
     show_assignment_summary(assignment);
-    while (true) {
-        output_ << "\n作业菜单\n"
-                << "1. 新增一个学生的批改结果\n"
-                << "2. 修改以前录入的批改结果\n"
-                << "3. 查看统计\n"
-                << "4. 返回作业列表\n"
-                << "5. 退出程序\n";
-        const int choice = read_integer("请选择：", 1, 5);
-        if (choice == 1) {
-            add_submission_interactive(assignment);
-        } else if (choice == 2) {
-            update_submission_interactive(assignment);
-        } else if (choice == 3) {
-            show_statistics(assignment);
-        } else if (choice == 4) {
-            return AssignmentAction::back;
-        } else {
-            output_ << "数据已保存，再见。\n";
-            return AssignmentAction::exit_program;
+    try {
+        while (true) {
+            output_ << "\n作业菜单\n"
+                    << "1. 新增一个学生的批改结果\n"
+                    << "2. 修改以前录入的批改结果\n"
+                    << "3. 查看统计\n"
+                    << "4. 返回作业列表\n"
+                    << "5. 退出程序\n";
+            const int choice = read_integer("请选择（输入 -1 也可返回作业列表）：", 1, 5, true);
+            if (choice == 1) {
+                add_submission_interactive(assignment);
+            } else if (choice == 2) {
+                update_submission_interactive(assignment);
+            } else if (choice == 3) {
+                show_statistics(assignment);
+            } else if (choice == 4) {
+                return AssignmentAction::back;
+            } else {
+                output_ << "数据已保存，再见。\n";
+                return AssignmentAction::exit_program;
+            }
         }
+    } catch (const BackRequested&) {
+        return AssignmentAction::back;
     }
 }
 
@@ -280,7 +302,13 @@ void App::add_submission_interactive(const Assignment& assignment) {
                 << " 位学生，不能继续新增；可以修改记录或查看统计。\n";
         return;
     }
-    const auto questions = read_wrong_questions(assignment.total_questions);
+    std::vector<int> questions;
+    try {
+        questions = read_wrong_questions(assignment.total_questions);
+    } catch (const BackRequested&) {
+        output_ << "已取消，本次记录未保存。\n";
+        return;
+    }
     const auto result = evaluate(assignment, questions);
     output_ << "\n待保存：第 " << completed + 1 << " 位学生\n"
             << "错题编号：" << question_list(questions) << '\n'
@@ -312,26 +340,31 @@ void App::update_submission_interactive(const Assignment& assignment) {
         output_ << "尚未录入任何学生，暂时没有可修改的记录。\n";
         return;
     }
-    const int reverse_position = read_integer("要修改已经录入学生中的倒数第几个？", 1, completed);
-    const auto original =
-        database_.get_submission_by_reverse_position(assignment.id, reverse_position);
-    if (!original.has_value()) {
-        throw DatabaseError("记录在读取期间发生变化，请重试。");
+    try {
+        const int reverse_position = read_integer(
+            "要修改已经录入学生中的倒数第几个？（输入 -1 取消）：", 1, completed, true);
+        const auto original =
+            database_.get_submission_by_reverse_position(assignment.id, reverse_position);
+        if (!original.has_value()) {
+            throw DatabaseError("记录在读取期间发生变化，请重试。");
+        }
+        show_submission(assignment, *original, "\n修改前：");
+        const auto new_questions = read_wrong_questions(assignment.total_questions);
+        Submission changed = *original;
+        changed.wrong_questions = new_questions;
+        show_submission(assignment, changed, "\n修改后：");
+        if (!confirm("确认替换这份记录吗？")) {
+            output_ << "已取消，原记录保持不变。\n";
+            return;
+        }
+        database_.update_submission(original->id, new_questions);
+        const auto updated = evaluate(assignment, new_questions);
+        output_ << "第 " << original->sequence << " 位学生的记录已更新：正确题数 "
+                << updated.correct_count << "，等第 " << grade_label(updated.grade)
+                << "；录入序号保持不变。\n";
+    } catch (const BackRequested&) {
+        output_ << "已取消修改，原记录保持不变。\n";
     }
-    show_submission(assignment, *original, "\n修改前：");
-    const auto new_questions = read_wrong_questions(assignment.total_questions);
-    Submission changed = *original;
-    changed.wrong_questions = new_questions;
-    show_submission(assignment, changed, "\n修改后：");
-    if (!confirm("确认替换这份记录吗？")) {
-        output_ << "已取消，原记录保持不变。\n";
-        return;
-    }
-    database_.update_submission(original->id, new_questions);
-    const auto updated = evaluate(assignment, new_questions);
-    output_ << "第 " << original->sequence << " 位学生的记录已更新：正确题数 "
-            << updated.correct_count << "，等第 " << grade_label(updated.grade)
-            << "；录入序号保持不变。\n";
 }
 
 void App::show_assignment_summary(const Assignment& assignment) {

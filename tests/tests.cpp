@@ -299,6 +299,53 @@ void test_confirmation_uses_yn() {
     check(output.str().find("（是/否）") == std::string::npos, "界面不再提示中文是/否");
 }
 
+void test_minus_one_goes_back() {
+    TemporaryDatabasePath temporary;
+    Database database(temporary.path());
+    const Id assignment_id = database.create_assignment(sample_assignment());
+    static_cast<void>(database.add_submission(assignment_id, {2, 5}));
+
+    std::ostringstream scripted_input;
+    scripted_input << "1\n"
+                   << "-1\n"
+                   << "1\n"
+                   << "临时作业\n"
+                   << "-1\n"
+                   << "2\n"
+                   << "-1\n"
+                   << "3\n"
+                   << "-1\n"
+                   << "2\n"
+                   << assignment_id << '\n'
+                   << "-1\n"
+                   << "0\n"
+                   << "2\n"
+                   << assignment_id << '\n'
+                   << "1\n"
+                   << "-1\n"
+                   << "2\n"
+                   << "-1\n"
+                   << "2\n"
+                   << "1\n"
+                   << "-1\n"
+                   << "5\n";
+    std::istringstream input(scripted_input.str());
+    std::ostringstream output;
+
+    App app(database, input, output);
+    check(app.run() == 0, "-1 返回流程正常退出");
+    check(database.list_assignments().size() == 1, "取消新建和删除后作业保持不变");
+    const auto submissions = database.list_submissions(assignment_id);
+    check(submissions.size() == 1 && submissions[0].wrong_questions == std::vector<int>({2, 5}),
+          "取消新增和修改后学生记录保持不变");
+    check(output.str().find("输入 -1 可取消新建并返回主菜单。") != std::string::npos,
+          "新建作业提示 -1 可取消");
+    check(output.str().find("已取消删除。") != std::string::npos, "-1 可取消删除");
+    check(output.str().find("已取消，本次记录未保存。") != std::string::npos, "-1 可取消新增记录");
+    check(output.str().find("已取消修改，原记录保持不变。") != std::string::npos,
+          "-1 可在修改流程中返回");
+}
+
 }  // namespace
 
 int main() {
@@ -311,6 +358,7 @@ int main() {
         {"持久化", test_persistence},
         {"删除作业", test_delete_assignment},
         {"y/n 确认交互", test_confirmation_uses_yn},
+        {"-1 返回上一界面", test_minus_one_goes_back},
     };
     int failures = 0;
     for (const auto& [name, test] : tests) {

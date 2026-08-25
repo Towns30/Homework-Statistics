@@ -24,7 +24,8 @@ class App {
     bool input_closed_{false};
 
     [[nodiscard]] std::string read_line(const std::string& prompt);
-    [[nodiscard]] int read_integer(const std::string& prompt, int minimum, int maximum);
+    [[nodiscard]] int read_integer(const std::string& prompt, int minimum, int maximum,
+                                   bool allow_back = false);
     [[nodiscard]] bool confirm(const std::string& prompt);
     [[nodiscard]] std::vector<int> read_wrong_questions(int total_questions);
     [[nodiscard]] Assignment read_assignment();
