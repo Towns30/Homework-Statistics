@@ -3,6 +3,7 @@
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -124,13 +125,56 @@ Assignment read_assignment(Statement& statement) {
     Assignment assignment;
     assignment.id = statement.column_id(0);
     assignment.name = statement.column_text(1);
-    assignment.total_questions = statement.column_int(2);
+    assignment.main_question_count = statement.column_int(2);
     assignment.total_students = statement.column_int(3);
     assignment.thresholds = {statement.column_int(4), statement.column_int(5),
                              statement.column_int(6), statement.column_int(7),
                              statement.column_int(8)};
     assignment.created_at = statement.column_text(9);
     return assignment;
+}
+
+void load_question_units(sqlite3* database, Assignment& assignment) {
+    Statement statement(database,
+                        "SELECT id, major_number, part_number FROM question_units WHERE "
+                        "assignment_id = ? ORDER BY sort_order");
+    statement.bind(1, assignment.id);
+    while (statement.step_row()) {
+        assignment.question_units.push_back(
+            {statement.column_id(0), {statement.column_int(1), statement.column_int(2)}});
+    }
+}
+
+std::vector<QuestionReference> validate_wrong_questions(
+    const Assignment& assignment, const std::vector<QuestionReference>& wrong_questions) {
+    std::set<QuestionReference> valid;
+    for (const auto& unit : assignment.question_units) {
+        valid.insert(unit.reference);
+    }
+    std::vector<QuestionReference> sorted = wrong_questions;
+    std::sort(sorted.begin(), sorted.end());
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
+        throw std::invalid_argument("错题编号不能重复。");
+    }
+    for (const auto& question : sorted) {
+        if (!valid.contains(question)) {
+            throw std::invalid_argument("错题编号超出作业题目范围。");
+        }
+    }
+    return sorted;
+}
+
+Id find_question_unit_id(sqlite3* database, Id assignment_id, const QuestionReference& reference) {
+    Statement statement(database,
+                        "SELECT id FROM question_units WHERE assignment_id = ? AND major_number "
+                        "= ? AND part_number = ?");
+    statement.bind(1, assignment_id);
+    statement.bind_int(2, reference.major_number);
+    statement.bind_int(3, reference.part_number);
+    if (!statement.step_row()) {
+        throw std::invalid_argument("错题编号超出作业题目范围。");
+    }
+    return statement.column_id(0);
 }
 
 }  // namespace
@@ -197,7 +241,7 @@ struct Database::Impl {
             }
             current_version = version.column_int(0);
         }
-        if (current_version > 1) {
+        if (current_version > 2) {
             throw DatabaseError("数据库版本高于本程序支持的版本，请升级程序。");
         }
         if (current_version == 0) {
@@ -242,6 +286,58 @@ struct Database::Impl {
                 record.bind_int(1, 1);
                 record.execute();
             }
+            current_version = 1;
+        }
+        if (current_version == 1) {
+            execute_static(database,
+                           "ALTER TABLE assignments ADD COLUMN main_question_count INTEGER NOT "
+                           "NULL DEFAULT 1 CHECK(main_question_count > 0)",
+                           "为作业表增加大题数失败");
+            execute_static(database, "UPDATE assignments SET main_question_count = total_questions",
+                           "迁移作业大题数失败");
+            execute_static(
+                database,
+                "CREATE TABLE question_units ("
+                "id INTEGER PRIMARY KEY, assignment_id INTEGER NOT NULL REFERENCES "
+                "assignments(id) ON DELETE CASCADE, major_number INTEGER NOT NULL "
+                "CHECK(major_number > 0), part_number INTEGER NOT NULL CHECK(part_number >= 0), "
+                "sort_order INTEGER NOT NULL CHECK(sort_order > 0), "
+                "UNIQUE(assignment_id, major_number, part_number), "
+                "UNIQUE(assignment_id, sort_order))",
+                "创建计分单位表失败");
+            execute_static(
+                database,
+                "WITH RECURSIVE generated(assignment_id, number, maximum) AS ("
+                "SELECT id, 1, total_questions FROM assignments "
+                "UNION ALL SELECT assignment_id, number + 1, maximum FROM generated WHERE "
+                "number < maximum) "
+                "INSERT INTO question_units(assignment_id, major_number, part_number, "
+                "sort_order) SELECT assignment_id, number, 0, number FROM generated",
+                "迁移旧作业题目结构失败");
+            execute_static(
+                database,
+                "CREATE TABLE wrong_question_units ("
+                "submission_id INTEGER NOT NULL REFERENCES submissions(id) ON DELETE CASCADE, "
+                "question_unit_id INTEGER NOT NULL REFERENCES question_units(id) ON DELETE "
+                "CASCADE, PRIMARY KEY(submission_id, question_unit_id))",
+                "创建小问错题表失败");
+            execute_static(database,
+                           "INSERT INTO wrong_question_units(submission_id, question_unit_id) "
+                           "SELECT w.submission_id, q.id FROM wrong_questions w "
+                           "JOIN submissions s ON s.id = w.submission_id "
+                           "JOIN question_units q ON q.assignment_id = s.assignment_id "
+                           "AND q.major_number = w.question_number AND q.part_number = 0",
+                           "迁移旧错题数据失败");
+            execute_static(database, "DROP TABLE wrong_questions", "移除旧错题表失败");
+            execute_static(database,
+                           "CREATE INDEX idx_question_units_assignment ON "
+                           "question_units(assignment_id, sort_order)",
+                           "创建计分单位索引失败");
+            {
+                Statement record(database, "INSERT INTO schema_version(version) VALUES (?)");
+                record.bind_int(1, 2);
+                record.execute();
+            }
         }
         transaction.commit();
     }
@@ -265,18 +361,35 @@ Id Database::create_assignment(const Assignment& assignment) {
         Statement statement(
             impl_->database,
             "INSERT INTO assignments(name, total_questions, total_students, a_plus_threshold, "
-            "a_threshold, b_threshold, c_threshold, d_threshold) VALUES (?, ?, ?, ?, ?, ?, ?, "
-            "?)");
+            "a_threshold, b_threshold, c_threshold, d_threshold, main_question_count) VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?)");
         statement.bind(1, assignment.name);
-        statement.bind_int(2, assignment.total_questions);
+        statement.bind_int(2, scoring_unit_count(assignment));
         statement.bind_int(3, assignment.total_students);
         statement.bind_int(4, assignment.thresholds.a_plus);
         statement.bind_int(5, assignment.thresholds.a);
         statement.bind_int(6, assignment.thresholds.b);
         statement.bind_int(7, assignment.thresholds.c);
         statement.bind_int(8, assignment.thresholds.d);
+        statement.bind_int(9, assignment.main_question_count);
         statement.execute();
         id = sqlite3_last_insert_rowid(impl_->database);
+    }
+    {
+        Statement insert_unit(
+            impl_->database,
+            "INSERT INTO question_units(assignment_id, major_number, part_number, sort_order) "
+            "VALUES (?, ?, ?, ?)");
+        int sort_order = 1;
+        for (const auto& unit : assignment.question_units) {
+            insert_unit.bind(1, id);
+            insert_unit.bind_int(2, unit.reference.major_number);
+            insert_unit.bind_int(3, unit.reference.part_number);
+            insert_unit.bind_int(4, sort_order);
+            insert_unit.execute();
+            insert_unit.reset();
+            ++sort_order;
+        }
     }
     transaction.commit();
     return id;
@@ -297,26 +410,30 @@ bool Database::delete_assignment(Id id) {
 
 std::vector<Assignment> Database::list_assignments() const {
     Statement statement(impl_->database,
-                        "SELECT id, name, total_questions, total_students, a_plus_threshold, "
+                        "SELECT id, name, main_question_count, total_students, a_plus_threshold, "
                         "a_threshold, b_threshold, c_threshold, d_threshold, created_at FROM "
                         "assignments ORDER BY id");
     std::vector<Assignment> assignments;
     while (statement.step_row()) {
-        assignments.push_back(read_assignment(statement));
+        auto assignment = read_assignment(statement);
+        load_question_units(impl_->database, assignment);
+        assignments.push_back(std::move(assignment));
     }
     return assignments;
 }
 
 std::optional<Assignment> Database::get_assignment(Id id) const {
     Statement statement(impl_->database,
-                        "SELECT id, name, total_questions, total_students, a_plus_threshold, "
+                        "SELECT id, name, main_question_count, total_students, a_plus_threshold, "
                         "a_threshold, b_threshold, c_threshold, d_threshold, created_at FROM "
                         "assignments WHERE id = ?");
     statement.bind(1, id);
     if (!statement.step_row()) {
         return std::nullopt;
     }
-    return read_assignment(statement);
+    auto assignment = read_assignment(statement);
+    load_question_units(impl_->database, assignment);
+    return assignment;
 }
 
 int Database::submission_count(Id assignment_id) const {
@@ -329,20 +446,18 @@ int Database::submission_count(Id assignment_id) const {
     return statement.column_int(0);
 }
 
-Id Database::add_submission(Id assignment_id, const std::vector<int>& wrong_questions) {
+Id Database::add_submission(Id assignment_id,
+                            const std::vector<QuestionReference>& wrong_questions) {
     Transaction transaction(impl_->database);
-    int total_questions{};
     int total_students{};
     {
-        Statement assignment_statement(
-            impl_->database,
-            "SELECT total_questions, total_students FROM assignments WHERE id = ?");
+        Statement assignment_statement(impl_->database,
+                                       "SELECT total_students FROM assignments WHERE id = ?");
         assignment_statement.bind(1, assignment_id);
         if (!assignment_statement.step_row()) {
             throw std::invalid_argument("作业不存在。");
         }
-        total_questions = assignment_statement.column_int(0);
-        total_students = assignment_statement.column_int(1);
+        total_students = assignment_statement.column_int(0);
     }
 
     int count{};
@@ -359,14 +474,11 @@ Id Database::add_submission(Id assignment_id, const std::vector<int>& wrong_ques
         throw std::invalid_argument("已达到总学生数，不能继续新增。");
     }
 
-    std::vector<int> sorted = wrong_questions;
-    std::sort(sorted.begin(), sorted.end());
-    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
-        throw std::invalid_argument("错题编号不能重复。");
+    const auto assignment = get_assignment(assignment_id);
+    if (!assignment.has_value()) {
+        throw std::invalid_argument("作业不存在。");
     }
-    if (!sorted.empty() && (sorted.front() < 1 || sorted.back() > total_questions)) {
-        throw std::invalid_argument("错题编号超出作业题目范围。");
-    }
+    const auto sorted = validate_wrong_questions(*assignment, wrong_questions);
 
     Id submission_id{};
     {
@@ -380,10 +492,10 @@ Id Database::add_submission(Id assignment_id, const std::vector<int>& wrong_ques
     {
         Statement insert_wrong(
             impl_->database,
-            "INSERT INTO wrong_questions(submission_id, question_number) VALUES (?, ?)");
-        for (const int question : sorted) {
+            "INSERT INTO wrong_question_units(submission_id, question_unit_id) VALUES (?, ?)");
+        for (const auto& question : sorted) {
             insert_wrong.bind(1, submission_id);
-            insert_wrong.bind_int(2, question);
+            insert_wrong.bind(2, find_question_unit_id(impl_->database, assignment_id, question));
             insert_wrong.execute();
             insert_wrong.reset();
         }
@@ -409,11 +521,13 @@ std::vector<Submission> Database::list_submissions(Id assignment_id) const {
 
         Statement wrong_statement(
             impl_->database,
-            "SELECT question_number FROM wrong_questions WHERE submission_id = ? ORDER BY "
-            "question_number");
+            "SELECT q.major_number, q.part_number FROM wrong_question_units w JOIN "
+            "question_units q ON q.id = w.question_unit_id WHERE w.submission_id = ? ORDER BY "
+            "q.sort_order");
         wrong_statement.bind(1, submission.id);
         while (wrong_statement.step_row()) {
-            submission.wrong_questions.push_back(wrong_statement.column_int(0));
+            submission.wrong_questions.push_back(
+                {wrong_statement.column_int(0), wrong_statement.column_int(1)});
         }
         submissions.push_back(std::move(submission));
     }
@@ -442,49 +556,47 @@ std::optional<Submission> Database::get_submission_by_reverse_position(Id assign
     submission.updated_at = statement.column_text(4);
     Statement wrong_statement(
         impl_->database,
-        "SELECT question_number FROM wrong_questions WHERE submission_id = ? ORDER BY "
-        "question_number");
+        "SELECT q.major_number, q.part_number FROM wrong_question_units w JOIN question_units q "
+        "ON q.id = w.question_unit_id WHERE w.submission_id = ? ORDER BY q.sort_order");
     wrong_statement.bind(1, submission.id);
     while (wrong_statement.step_row()) {
-        submission.wrong_questions.push_back(wrong_statement.column_int(0));
+        submission.wrong_questions.push_back(
+            {wrong_statement.column_int(0), wrong_statement.column_int(1)});
     }
     return submission;
 }
 
-void Database::update_submission(Id submission_id, const std::vector<int>& wrong_questions) {
+void Database::update_submission(Id submission_id,
+                                 const std::vector<QuestionReference>& wrong_questions) {
     Transaction transaction(impl_->database);
-    int total_questions{};
+    Id assignment_id{};
     {
-        Statement bounds(impl_->database,
-                         "SELECT a.total_questions FROM submissions s JOIN assignments a ON a.id = "
-                         "s.assignment_id WHERE s.id = ?");
+        Statement bounds(impl_->database, "SELECT assignment_id FROM submissions WHERE id = ?");
         bounds.bind(1, submission_id);
         if (!bounds.step_row()) {
             throw std::invalid_argument("学生记录不存在。");
         }
-        total_questions = bounds.column_int(0);
+        assignment_id = bounds.column_id(0);
     }
-    std::vector<int> sorted = wrong_questions;
-    std::sort(sorted.begin(), sorted.end());
-    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end()) {
-        throw std::invalid_argument("错题编号不能重复。");
+    const auto assignment = get_assignment(assignment_id);
+    if (!assignment.has_value()) {
+        throw std::invalid_argument("作业不存在。");
     }
-    if (!sorted.empty() && (sorted.front() < 1 || sorted.back() > total_questions)) {
-        throw std::invalid_argument("错题编号超出作业题目范围。");
-    }
+    const auto sorted = validate_wrong_questions(*assignment, wrong_questions);
 
     {
-        Statement remove(impl_->database, "DELETE FROM wrong_questions WHERE submission_id = ?");
+        Statement remove(impl_->database,
+                         "DELETE FROM wrong_question_units WHERE submission_id = ?");
         remove.bind(1, submission_id);
         remove.execute();
     }
     {
         Statement insert_wrong(
             impl_->database,
-            "INSERT INTO wrong_questions(submission_id, question_number) VALUES (?, ?)");
-        for (const int question : sorted) {
+            "INSERT INTO wrong_question_units(submission_id, question_unit_id) VALUES (?, ?)");
+        for (const auto& question : sorted) {
             insert_wrong.bind(1, submission_id);
-            insert_wrong.bind_int(2, question);
+            insert_wrong.bind(2, find_question_unit_id(impl_->database, assignment_id, question));
             insert_wrong.execute();
             insert_wrong.reset();
         }

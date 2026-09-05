@@ -30,11 +30,12 @@ class Database {
     [[nodiscard]] std::vector<Assignment> list_assignments() const;
     [[nodiscard]] std::optional<Assignment> get_assignment(Id id) const;
     [[nodiscard]] int submission_count(Id assignment_id) const;
-    [[nodiscard]] Id add_submission(Id assignment_id, const std::vector<int>& wrong_questions);
+    [[nodiscard]] Id add_submission(Id assignment_id,
+                                    const std::vector<QuestionReference>& wrong_questions);
     [[nodiscard]] std::vector<Submission> list_submissions(Id assignment_id) const;
     [[nodiscard]] std::optional<Submission> get_submission_by_reverse_position(
         Id assignment_id, int reverse_position) const;
-    void update_submission(Id submission_id, const std::vector<int>& wrong_questions);
+    void update_submission(Id submission_id, const std::vector<QuestionReference>& wrong_questions);
 
    private:
     struct Impl;

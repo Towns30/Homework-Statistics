@@ -1,7 +1,10 @@
 #include "homework_grader/app.hpp"
 
+#include <algorithm>
 #include <iomanip>
 #include <limits>
+#include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 
@@ -15,18 +18,72 @@ namespace {
 class InputClosed : public std::exception {};
 class BackRequested : public std::exception {};
 
-std::string question_list(const std::vector<int>& questions) {
+std::string question_label(const QuestionReference& question) {
+    if (question.part_number == 0) {
+        return std::to_string(question.major_number);
+    }
+    return std::to_string(question.major_number) + "." + std::to_string(question.part_number);
+}
+
+std::string question_list(const Assignment& assignment,
+                          const std::vector<QuestionReference>& questions) {
     if (questions.empty()) {
         return "无（全部正确）";
     }
+    std::set<QuestionReference> wrong(questions.begin(), questions.end());
+    std::map<int, std::vector<QuestionReference>> units_by_major;
+    for (const auto& unit : assignment.question_units) {
+        units_by_major[unit.reference.major_number].push_back(unit.reference);
+    }
+
     std::ostringstream stream;
-    for (std::size_t index = 0; index < questions.size(); ++index) {
-        if (index > 0) {
-            stream << ' ';
+    bool first = true;
+    for (const auto& [major, units] : units_by_major) {
+        const auto wrong_count = std::count_if(
+            units.begin(), units.end(),
+            [&wrong](const QuestionReference& reference) { return wrong.contains(reference); });
+        if (wrong_count == 0) {
+            continue;
         }
-        stream << questions[index];
+        const bool split = units.front().part_number != 0;
+        if (split && wrong_count == static_cast<std::ptrdiff_t>(units.size())) {
+            if (!first) {
+                stream << ' ';
+            }
+            stream << major << "（全部小问）";
+            first = false;
+            continue;
+        }
+        for (const auto& unit : units) {
+            if (!wrong.contains(unit)) {
+                continue;
+            }
+            if (!first) {
+                stream << ' ';
+            }
+            stream << question_label(unit);
+            first = false;
+        }
     }
     return stream.str();
+}
+
+void show_question_structure(std::ostream& output, const Assignment& assignment) {
+    output << "\n题目结构：\n";
+    int current_major{};
+    for (const auto& unit : assignment.question_units) {
+        if (unit.reference.major_number != current_major) {
+            if (current_major != 0) {
+                output << '\n';
+            }
+            output << "  ";
+            current_major = unit.reference.major_number;
+        } else {
+            output << ' ';
+        }
+        output << question_label(unit.reference);
+    }
+    output << "\n共 " << scoring_unit_count(assignment) << " 个计分单位\n";
 }
 
 }  // namespace
@@ -106,15 +163,15 @@ bool App::confirm(const std::string& prompt) {
     }
 }
 
-std::vector<int> App::read_wrong_questions(int total_questions) {
+std::vector<QuestionReference> App::read_wrong_questions(const Assignment& assignment) {
     while (true) {
         const std::string input = read_line(
-            "请输入错题编号（逗号或空格分隔；全对请直接回车或输入“无”；输入 -1 "
-            "取消）：");
+            "请输入错题编号（如 1 2.1；有小问的大题号表示全部小问；逗号或空格分隔；"
+            "全对请直接回车或输入“无”；输入 -1 取消）：");
         if (trim(input) == "-1") {
             throw BackRequested{};
         }
-        const auto parsed = parse_wrong_questions(input, total_questions);
+        const auto parsed = parse_wrong_questions(input, assignment);
         if (parsed.ok()) {
             return parsed.questions;
         }
@@ -134,18 +191,37 @@ Assignment App::read_assignment() {
         }
     } while (assignment.name.empty());
 
-    constexpr int maximum_value = 1'000'000;
-    assignment.total_questions = read_integer(
-        "总题目数（至少 4 题，才能设置五个严格递减的等级下限）：", 4, maximum_value, true);
-    assignment.total_students = read_integer("总学生数：", 1, maximum_value, true);
+    constexpr int maximum_value = maximum_question_units;
+    assignment.main_question_count = read_integer("大题数：", 1, maximum_value, true);
     while (true) {
-        output_ << "请设置五个等级的正确题数下限。\n";
-        assignment.thresholds.a_plus =
-            read_integer("A+ 下限：", 0, assignment.total_questions, true);
-        assignment.thresholds.a = read_integer("A 下限：", 0, assignment.total_questions, true);
-        assignment.thresholds.b = read_integer("B 下限：", 0, assignment.total_questions, true);
-        assignment.thresholds.c = read_integer("C 下限：", 0, assignment.total_questions, true);
-        assignment.thresholds.d = read_integer("D 下限：", 0, assignment.total_questions, true);
+        const std::string structure =
+            read_line("含小问的大题（例如 2=3 5=2；没有请直接回车；输入 -1 取消）：");
+        if (trim(structure) == "-1") {
+            throw BackRequested{};
+        }
+        const auto parsed =
+            parse_question_structure(structure, assignment.main_question_count, maximum_value);
+        if (!parsed.ok()) {
+            output_ << "输入无效：" << parsed.error << '\n';
+            continue;
+        }
+        if (parsed.question_units.size() < 4) {
+            output_ << "输入无效：至少需要 4 个计分单位，才能设置五个严格递减的等级下限。\n";
+            continue;
+        }
+        assignment.question_units = parsed.question_units;
+        break;
+    }
+    show_question_structure(output_, assignment);
+    assignment.total_students = read_integer("总学生数：", 1, maximum_value, true);
+    const int unit_count = scoring_unit_count(assignment);
+    while (true) {
+        output_ << "请设置五个等级的答对计分单位数下限。\n";
+        assignment.thresholds.a_plus = read_integer("A+ 下限：", 0, unit_count, true);
+        assignment.thresholds.a = read_integer("A 下限：", 0, unit_count, true);
+        assignment.thresholds.b = read_integer("B 下限：", 0, unit_count, true);
+        assignment.thresholds.c = read_integer("C 下限：", 0, unit_count, true);
+        assignment.thresholds.d = read_integer("D 下限：", 0, unit_count, true);
         std::string error;
         if (valid_assignment_config(assignment, &error)) {
             break;
@@ -159,7 +235,7 @@ bool App::create_assignment_interactive() {
     output_ << "\n新建作业\n输入 -1 可取消新建并返回主菜单。\n";
     try {
         const Assignment assignment = read_assignment();
-        output_ << "\n请确认等级区间（正确题数）：\n";
+        output_ << "\n请确认等级区间（答对计分单位数）：\n";
         for (const auto& line : grade_range_lines(assignment)) {
             output_ << "  " << line << '\n';
         }
@@ -186,9 +262,9 @@ void App::delete_assignment_interactive() {
     output_ << "\n删除已有作业\n";
     for (const auto& assignment : assignments) {
         output_ << "ID " << assignment.id << " | " << assignment.name << " | "
-                << assignment.total_questions << " 题 | "
-                << database_.submission_count(assignment.id) << '/' << assignment.total_students
-                << " 人 | 创建于 " << assignment.created_at << '\n';
+                << assignment.main_question_count << " 道大题 | " << scoring_unit_count(assignment)
+                << " 个计分单位 | " << database_.submission_count(assignment.id) << '/'
+                << assignment.total_students << " 人 | 创建于 " << assignment.created_at << '\n';
     }
 
     while (true) {
@@ -237,7 +313,8 @@ bool App::open_assignment_interactive() {
         output_ << "\n已有作业\n";
         for (const auto& assignment : assignments) {
             output_ << "ID " << assignment.id << " | " << assignment.name << " | "
-                    << assignment.total_questions << " 题 | "
+                    << assignment.main_question_count << " 道大题 | "
+                    << scoring_unit_count(assignment) << " 个计分单位 | "
                     << database_.submission_count(assignment.id) << '/' << assignment.total_students
                     << " 人 | 创建于 " << assignment.created_at << '\n';
         }
@@ -302,26 +379,26 @@ void App::add_submission_interactive(const Assignment& assignment) {
                 << " 位学生，不能继续新增；可以修改记录或查看统计。\n";
         return;
     }
-    std::vector<int> questions;
+    std::vector<QuestionReference> questions;
     try {
-        questions = read_wrong_questions(assignment.total_questions);
+        questions = read_wrong_questions(assignment);
     } catch (const BackRequested&) {
         output_ << "已取消，本次记录未保存。\n";
         return;
     }
     const auto result = evaluate(assignment, questions);
     output_ << "\n待保存：第 " << completed + 1 << " 位学生\n"
-            << "错题编号：" << question_list(questions) << '\n'
-            << "错题数量：" << questions.size() << '\n'
-            << "正确题数：" << result.correct_count << '\n'
+            << "错题编号：" << question_list(assignment, questions) << '\n'
+            << "错误计分单位数：" << questions.size() << '\n'
+            << "答对计分单位数：" << result.correct_unit_count << '\n'
             << "等级：" << grade_label(result.grade) << '\n';
     if (!confirm("确认保存吗？")) {
         output_ << "已取消，本次记录未保存。\n";
         return;
     }
     static_cast<void>(database_.add_submission(assignment.id, questions));
-    output_ << "第 " << completed + 1 << " 位学生的记录已保存：正确题数 " << result.correct_count
-            << "，等第 " << grade_label(result.grade) << "。\n";
+    output_ << "第 " << completed + 1 << " 位学生的记录已保存：答对计分单位数 "
+            << result.correct_unit_count << "，等第 " << grade_label(result.grade) << "。\n";
 }
 
 void App::show_submission(const Assignment& assignment, const Submission& submission,
@@ -329,8 +406,8 @@ void App::show_submission(const Assignment& assignment, const Submission& submis
     const auto result = evaluate(assignment, submission.wrong_questions);
     output_ << heading << '\n'
             << "原始录入序号：" << submission.sequence << '\n'
-            << "错题编号：" << question_list(submission.wrong_questions) << '\n'
-            << "正确题数：" << result.correct_count << '\n'
+            << "错题编号：" << question_list(assignment, submission.wrong_questions) << '\n'
+            << "答对计分单位数：" << result.correct_unit_count << '\n'
             << "等级：" << grade_label(result.grade) << '\n';
 }
 
@@ -349,7 +426,7 @@ void App::update_submission_interactive(const Assignment& assignment) {
             throw DatabaseError("记录在读取期间发生变化，请重试。");
         }
         show_submission(assignment, *original, "\n修改前：");
-        const auto new_questions = read_wrong_questions(assignment.total_questions);
+        const auto new_questions = read_wrong_questions(assignment);
         Submission changed = *original;
         changed.wrong_questions = new_questions;
         show_submission(assignment, changed, "\n修改后：");
@@ -359,8 +436,8 @@ void App::update_submission_interactive(const Assignment& assignment) {
         }
         database_.update_submission(original->id, new_questions);
         const auto updated = evaluate(assignment, new_questions);
-        output_ << "第 " << original->sequence << " 位学生的记录已更新：正确题数 "
-                << updated.correct_count << "，等第 " << grade_label(updated.grade)
+        output_ << "第 " << original->sequence << " 位学生的记录已更新：答对计分单位数 "
+                << updated.correct_unit_count << "，等第 " << grade_label(updated.grade)
                 << "；录入序号保持不变。\n";
     } catch (const BackRequested&) {
         output_ << "已取消修改，原记录保持不变。\n";
@@ -372,8 +449,9 @@ void App::show_assignment_summary(const Assignment& assignment) {
     const double completion =
         static_cast<double>(completed) * 100.0 / static_cast<double>(assignment.total_students);
     output_ << "\n作业：" << assignment.name << '\n'
-            << "总题目数：" << assignment.total_questions << '\n'
-            << "等级区间（正确题数）：\n";
+            << "大题数：" << assignment.main_question_count << '\n'
+            << "计分单位数：" << scoring_unit_count(assignment) << '\n'
+            << "等级区间（答对计分单位数）：\n";
     for (const auto& line : grade_range_lines(assignment)) {
         output_ << "  " << line << '\n';
     }
@@ -386,12 +464,35 @@ void App::show_statistics(const Assignment& assignment) {
         calculate_statistics(assignment, database_.list_submissions(assignment.id));
     output_ << "\n每道题正确率\n";
     for (const auto& question : statistics.questions) {
-        output_ << "第 " << question.question_number << " 题：答对 " << question.correct_count
-                << " 人，答错 " << question.wrong_count << " 人，正确率 ";
+        const bool split = question.units.front().question.part_number != 0;
+        if (!split) {
+            const auto& unit = question.units.front();
+            output_ << "第 " << question.major_number << " 题：答对 " << unit.correct_count
+                    << " 人，答错 " << unit.wrong_count << " 人，正确率 ";
+            if (statistics.completed == 0) {
+                output_ << "暂无数据\n";
+            } else {
+                output_ << std::fixed << std::setprecision(2) << unit.correct_percentage << "%\n";
+            }
+            continue;
+        }
+
+        output_ << "第 " << question.major_number << " 题：\n";
+        for (const auto& unit : question.units) {
+            output_ << "  " << question_label(unit.question) << "：答对 " << unit.correct_count
+                    << " 人，答错 " << unit.wrong_count << " 人，正确率 ";
+            if (statistics.completed == 0) {
+                output_ << "暂无数据\n";
+            } else {
+                output_ << std::fixed << std::setprecision(2) << unit.correct_percentage << "%\n";
+            }
+        }
+        output_ << "  全题正确：" << question.fully_correct_count << " 人，正确率 ";
         if (statistics.completed == 0) {
             output_ << "暂无数据\n";
         } else {
-            output_ << std::fixed << std::setprecision(2) << question.correct_percentage << "%\n";
+            output_ << std::fixed << std::setprecision(2) << question.fully_correct_percentage
+                    << "%\n";
         }
     }
 

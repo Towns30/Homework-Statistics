@@ -13,7 +13,7 @@ namespace homework_grader {
 [[nodiscard]] Grade grade_for(int correct_count, const GradeThresholds& thresholds);
 [[nodiscard]] std::string grade_label(Grade grade);
 [[nodiscard]] EvaluatedSubmission evaluate(const Assignment& assignment,
-                                           const std::vector<int>& wrong_questions);
+                                           const std::vector<QuestionReference>& wrong_questions);
 [[nodiscard]] std::vector<std::string> grade_range_lines(const Assignment& assignment);
 [[nodiscard]] constexpr std::array<Grade, 6> all_grades() {
     return {Grade::a_plus, Grade::a, Grade::b, Grade::c, Grade::d, Grade::below_d};

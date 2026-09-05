@@ -27,7 +27,7 @@ class App {
     [[nodiscard]] int read_integer(const std::string& prompt, int minimum, int maximum,
                                    bool allow_back = false);
     [[nodiscard]] bool confirm(const std::string& prompt);
-    [[nodiscard]] std::vector<int> read_wrong_questions(int total_questions);
+    [[nodiscard]] std::vector<QuestionReference> read_wrong_questions(const Assignment& assignment);
     [[nodiscard]] Assignment read_assignment();
     [[nodiscard]] bool create_assignment_interactive();
     void delete_assignment_interactive();
