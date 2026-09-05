@@ -35,6 +35,7 @@ class App {
     [[nodiscard]] AssignmentAction assignment_loop(const Assignment& assignment);
     void add_submission_interactive(const Assignment& assignment);
     void update_submission_interactive(const Assignment& assignment);
+    void delete_submission_interactive(const Assignment& assignment);
     void show_assignment_summary(const Assignment& assignment);
     void show_statistics(const Assignment& assignment);
     void show_submission(const Assignment& assignment, const Submission& submission,

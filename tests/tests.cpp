@@ -468,6 +468,142 @@ void test_delete_assignment() {
           "删除作业后其错题关联被级联删除");
 }
 
+void test_delete_submission_and_sequence() {
+    TemporaryDatabasePath temporary;
+    Id assignment_id{};
+    Id retained_assignment_id{};
+    {
+        Database database(temporary.path());
+        assignment_id = database.create_assignment(sample_assignment(5));
+        auto retained_assignment = sample_assignment(2);
+        retained_assignment.name = "其他作业";
+        retained_assignment_id = database.create_assignment(retained_assignment);
+        static_cast<void>(database.add_submission(assignment_id, {question(1)}));
+        static_cast<void>(database.add_submission(assignment_id, {question(2), question(3)}));
+        static_cast<void>(database.add_submission(assignment_id, {}));
+        static_cast<void>(database.add_submission(retained_assignment_id, {question(4)}));
+
+        const auto target = database.get_submission_by_reverse_position(assignment_id, 2);
+        check(target.has_value() && target->sequence == 2, "按倒数位置找到待删除学生");
+        check(!database.delete_submission(999'999), "删除不存在的学生记录时返回失败");
+        check(database.delete_submission(target->id), "删除存在的学生记录时返回成功");
+
+        const auto remaining = database.list_submissions(assignment_id);
+        check(remaining.size() == 2 && remaining[0].sequence == 1 && remaining[1].sequence == 3,
+              "删除中间记录后其他原始录入序号保持不变");
+        check(remaining[0].wrong_questions == std::vector<QuestionReference>({question(1)}) &&
+                  remaining[1].wrong_questions.empty(),
+              "删除学生不会改变同一作业的其他记录");
+        const auto other_submissions = database.list_submissions(retained_assignment_id);
+        check(other_submissions.size() == 1 && other_submissions[0].wrong_questions ==
+                                                   std::vector<QuestionReference>({question(4)}),
+              "删除学生不会影响其他作业");
+
+        static_cast<void>(database.add_submission(assignment_id, {question(5)}));
+        auto after_add = database.list_submissions(assignment_id);
+        check(after_add.size() == 3 && after_add.back().sequence == 4,
+              "删除中间记录后按最大序号继续新增");
+        check(database.delete_submission(after_add.back().id), "可以删除当前最后一份记录");
+        static_cast<void>(database.add_submission(assignment_id, {question(6)}));
+        after_add = database.list_submissions(assignment_id);
+        check(after_add.size() == 3 && after_add.back().sequence == 4 &&
+                  after_add.back().wrong_questions == std::vector<QuestionReference>({question(6)}),
+              "删除最后一份记录后新增时复用空出的末尾序号");
+    }
+    {
+        Database reopened(temporary.path());
+        const auto submissions = reopened.list_submissions(assignment_id);
+        check(submissions.size() == 3 && submissions[0].sequence == 1 &&
+                  submissions[1].sequence == 3 && submissions[2].sequence == 4,
+              "重新打开后学生删除及后续新增保持有效");
+        check(reopened.list_submissions(retained_assignment_id).size() == 1,
+              "重新打开后其他作业仍然存在");
+    }
+    check(scalar_int(temporary.path(), "SELECT COUNT(*) FROM wrong_question_units") == 3,
+          "删除学生后其错题关联被级联删除");
+}
+
+void test_delete_submission_interactive() {
+    TemporaryDatabasePath temporary;
+    Database database(temporary.path());
+    const Id assignment_id = database.create_assignment(sample_assignment(4));
+    static_cast<void>(database.add_submission(assignment_id, {question(1)}));
+    static_cast<void>(database.add_submission(assignment_id, {question(2), question(3)}));
+    static_cast<void>(database.add_submission(assignment_id, {}));
+
+    std::ostringstream scripted_input;
+    scripted_input << "2\n"
+                   << assignment_id << '\n'
+                   << "3\n"
+                   << "\n"
+                   << "abc\n"
+                   << "0\n"
+                   << "-2\n"
+                   << "4\n"
+                   << "2\n"
+                   << "maybe\n"
+                   << "n\n"
+                   << "3\n"
+                   << "-1\n"
+                   << "3\n"
+                   << "2\n"
+                   << "y\n"
+                   << "4\n"
+                   << "1\n"
+                   << "4\n"
+                   << "y\n"
+                   << "5\n"
+                   << "0\n"
+                   << "4\n";
+    std::istringstream input(scripted_input.str());
+    std::ostringstream output;
+
+    App app(database, input, output);
+    check(app.run() == 0, "删除学生交互流程正常退出");
+    const auto submissions = database.list_submissions(assignment_id);
+    check(submissions.size() == 3 && submissions[0].sequence == 1 && submissions[1].sequence == 3 &&
+              submissions[2].sequence == 4,
+          "取消后可删除中间记录并按最大序号继续新增");
+    const std::string transcript = output.str();
+    check(transcript.find("3. 删除以前录入的批改结果") != std::string::npos,
+          "打开作业后的菜单提供删除学生入口");
+    check(transcript.find("要删除已经录入学生中的倒数第几个？（输入 -1 取消）：") !=
+              std::string::npos,
+          "删除选择提示与修改选择提示风格一致");
+    check(transcript.find("输入无效：请输入整数。") != std::string::npos &&
+              transcript.find("输入无效：请输入 1 ～ 3 之间的整数。") != std::string::npos,
+          "删除选择复用修改功能的非法输入和越界提示");
+    check(transcript.find("即将永久删除：\n原始录入序号：2") != std::string::npos,
+          "删除前展示通过倒数位置选中的学生记录");
+    check(transcript.find("输入无效：请输入 y 或 n。") != std::string::npos,
+          "删除确认拒绝 y/n 之外的输入");
+    check(transcript.find("已取消删除，原记录保持不变。") != std::string::npos,
+          "确认取消和 -1 取消均不删除记录");
+    check(transcript.find("第 2 位学生的记录已删除。") != std::string::npos,
+          "确认后删除选中的学生记录");
+    check(transcript.find("已录入学生数：2") != std::string::npos &&
+              transcript.find("完成率：50.00%") != std::string::npos,
+          "删除后统计根据剩余学生重新计算");
+    check(transcript.find("第 4 位学生的记录已保存") != std::string::npos,
+          "删除中间记录后新增提示与保存序号一致");
+}
+
+void test_delete_submission_when_empty() {
+    TemporaryDatabasePath temporary;
+    Database database(temporary.path());
+    const Id assignment_id = database.create_assignment(sample_assignment());
+    std::ostringstream scripted_input;
+    scripted_input << "2\n" << assignment_id << "\n3\n5\n0\n4\n";
+    std::istringstream input(scripted_input.str());
+    std::ostringstream output;
+
+    App app(database, input, output);
+    check(app.run() == 0, "无学生时删除流程正常返回");
+    check(output.str().find("尚未录入任何学生，暂时没有可删除的记录。") != std::string::npos,
+          "无学生时显示删除提示");
+    check(database.list_submissions(assignment_id).empty(), "无学生时删除不产生数据变化");
+}
+
 void test_split_interactive_flow() {
     TemporaryDatabasePath temporary;
     Id assignment_id{};
@@ -497,8 +633,8 @@ void test_split_interactive_flow() {
             "1\n"
             "4\n"
             "y\n"
-            "3\n"
             "4\n"
+            "5\n"
             "0\n"
             "4\n");
         std::ostringstream output;
@@ -595,7 +731,9 @@ void test_minus_one_goes_back() {
                    << "2\n"
                    << "1\n"
                    << "-1\n"
-                   << "5\n";
+                   << "3\n"
+                   << "-1\n"
+                   << "6\n";
     std::istringstream input(scripted_input.str());
     std::ostringstream output;
 
@@ -612,6 +750,8 @@ void test_minus_one_goes_back() {
     check(output.str().find("已取消，本次记录未保存。") != std::string::npos, "-1 可取消新增记录");
     check(output.str().find("已取消修改，原记录保持不变。") != std::string::npos,
           "-1 可在修改流程中返回");
+    check(output.str().find("已取消删除，原记录保持不变。") != std::string::npos,
+          "-1 可在删除学生流程中返回");
 }
 
 }  // namespace
@@ -628,6 +768,9 @@ int main() {
         {"v1 数据迁移", test_version_one_migration},
         {"持久化", test_persistence},
         {"删除作业", test_delete_assignment},
+        {"删除学生与新增序号", test_delete_submission_and_sequence},
+        {"删除学生终端交互", test_delete_submission_interactive},
+        {"无学生时删除", test_delete_submission_when_empty},
         {"小问终端流程", test_split_interactive_flow},
         {"y/n 确认交互", test_confirmation_uses_yn},
         {"-1 返回上一界面", test_minus_one_goes_back},

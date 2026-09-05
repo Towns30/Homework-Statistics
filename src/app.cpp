@@ -350,17 +350,20 @@ App::AssignmentAction App::assignment_loop(const Assignment& assignment) {
             output_ << "\n作业菜单\n"
                     << "1. 新增一个学生的批改结果\n"
                     << "2. 修改以前录入的批改结果\n"
-                    << "3. 查看统计\n"
-                    << "4. 返回作业列表\n"
-                    << "5. 退出程序\n";
-            const int choice = read_integer("请选择（输入 -1 也可返回作业列表）：", 1, 5, true);
+                    << "3. 删除以前录入的批改结果\n"
+                    << "4. 查看统计\n"
+                    << "5. 返回作业列表\n"
+                    << "6. 退出程序\n";
+            const int choice = read_integer("请选择（输入 -1 也可返回作业列表）：", 1, 6, true);
             if (choice == 1) {
                 add_submission_interactive(assignment);
             } else if (choice == 2) {
                 update_submission_interactive(assignment);
             } else if (choice == 3) {
-                show_statistics(assignment);
+                delete_submission_interactive(assignment);
             } else if (choice == 4) {
+                show_statistics(assignment);
+            } else if (choice == 5) {
                 return AssignmentAction::back;
             } else {
                 output_ << "数据已保存，再见。\n";
@@ -379,6 +382,8 @@ void App::add_submission_interactive(const Assignment& assignment) {
                 << " 位学生，不能继续新增；可以修改记录或查看统计。\n";
         return;
     }
+    const auto latest = database_.get_submission_by_reverse_position(assignment.id, 1);
+    const int next_sequence = latest.has_value() ? latest->sequence + 1 : 1;
     std::vector<QuestionReference> questions;
     try {
         questions = read_wrong_questions(assignment);
@@ -387,7 +392,7 @@ void App::add_submission_interactive(const Assignment& assignment) {
         return;
     }
     const auto result = evaluate(assignment, questions);
-    output_ << "\n待保存：第 " << completed + 1 << " 位学生\n"
+    output_ << "\n待保存：第 " << next_sequence << " 位学生\n"
             << "错题编号：" << question_list(assignment, questions) << '\n'
             << "错误计分单位数：" << questions.size() << '\n'
             << "答对计分单位数：" << result.correct_unit_count << '\n'
@@ -397,7 +402,7 @@ void App::add_submission_interactive(const Assignment& assignment) {
         return;
     }
     static_cast<void>(database_.add_submission(assignment.id, questions));
-    output_ << "第 " << completed + 1 << " 位学生的记录已保存：答对计分单位数 "
+    output_ << "第 " << next_sequence << " 位学生的记录已保存：答对计分单位数 "
             << result.correct_unit_count << "，等第 " << grade_label(result.grade) << "。\n";
 }
 
@@ -441,6 +446,36 @@ void App::update_submission_interactive(const Assignment& assignment) {
                 << "；录入序号保持不变。\n";
     } catch (const BackRequested&) {
         output_ << "已取消修改，原记录保持不变。\n";
+    }
+}
+
+void App::delete_submission_interactive(const Assignment& assignment) {
+    const int completed = database_.submission_count(assignment.id);
+    if (completed == 0) {
+        output_ << "尚未录入任何学生，暂时没有可删除的记录。\n";
+        return;
+    }
+    try {
+        const int reverse_position = read_integer(
+            "要删除已经录入学生中的倒数第几个？（输入 -1 取消）：", 1, completed, true);
+        const auto submission =
+            database_.get_submission_by_reverse_position(assignment.id, reverse_position);
+        if (!submission.has_value()) {
+            output_ << "学生记录已不存在，没有删除任何数据。\n";
+            return;
+        }
+        show_submission(assignment, *submission, "\n即将永久删除：");
+        if (!confirm("确认永久删除这位学生的记录吗？")) {
+            output_ << "已取消删除，原记录保持不变。\n";
+            return;
+        }
+        if (database_.delete_submission(submission->id)) {
+            output_ << "第 " << submission->sequence << " 位学生的记录已删除。\n";
+        } else {
+            output_ << "学生记录已不存在，没有删除任何数据。\n";
+        }
+    } catch (const BackRequested&) {
+        output_ << "已取消删除，原记录保持不变。\n";
     }
 }
 

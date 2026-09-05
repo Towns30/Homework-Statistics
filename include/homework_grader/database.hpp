@@ -36,6 +36,7 @@ class Database {
     [[nodiscard]] std::optional<Submission> get_submission_by_reverse_position(
         Id assignment_id, int reverse_position) const;
     void update_submission(Id submission_id, const std::vector<QuestionReference>& wrong_questions);
+    [[nodiscard]] bool delete_submission(Id submission_id);
 
    private:
     struct Impl;

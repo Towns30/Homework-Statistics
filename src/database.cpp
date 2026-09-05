@@ -461,14 +461,18 @@ Id Database::add_submission(Id assignment_id,
     }
 
     int count{};
+    int next_sequence{};
     {
-        Statement count_statement(impl_->database,
-                                  "SELECT COUNT(*) FROM submissions WHERE assignment_id = ?");
+        Statement count_statement(
+            impl_->database,
+            "SELECT COUNT(*), COALESCE(MAX(sequence), 0) + 1 FROM submissions "
+            "WHERE assignment_id = ?");
         count_statement.bind(1, assignment_id);
         if (!count_statement.step_row()) {
             throw DatabaseError("读取已录入人数失败");
         }
         count = count_statement.column_int(0);
+        next_sequence = count_statement.column_int(1);
     }
     if (count >= total_students) {
         throw std::invalid_argument("已达到总学生数，不能继续新增。");
@@ -485,7 +489,7 @@ Id Database::add_submission(Id assignment_id,
         Statement insert(impl_->database,
                          "INSERT INTO submissions(assignment_id, sequence) VALUES (?, ?)");
         insert.bind(1, assignment_id);
-        insert.bind_int(2, count + 1);
+        insert.bind_int(2, next_sequence);
         insert.execute();
         submission_id = sqlite3_last_insert_rowid(impl_->database);
     }
@@ -610,6 +614,19 @@ void Database::update_submission(Id submission_id,
         touch.execute();
     }
     transaction.commit();
+}
+
+bool Database::delete_submission(Id submission_id) {
+    Transaction transaction(impl_->database);
+    int deleted{};
+    {
+        Statement statement(impl_->database, "DELETE FROM submissions WHERE id = ?");
+        statement.bind(1, submission_id);
+        statement.execute();
+        deleted = sqlite3_changes(impl_->database);
+    }
+    transaction.commit();
+    return deleted > 0;
 }
 
 }  // namespace homework_grader
